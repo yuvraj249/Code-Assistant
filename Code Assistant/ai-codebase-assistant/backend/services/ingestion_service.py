@@ -2,10 +2,12 @@
 Ingestion Service
 Handles: ZIP upload extraction, GitHub repo cloning,
 then runs the parse → embed → store pipeline.
+Persists repo registry to disk so it survives server restarts.
 """
 
 import os
 import re
+import json
 import uuid
 import zipfile
 import tempfile
@@ -18,8 +20,31 @@ from core.vector_store import VectorStore
 parser = CodeParser()
 vector_store = VectorStore()
 
-# In-memory registry: repo_id → repo metadata
-REPO_REGISTRY: Dict[str, Dict[str, Any]] = {}
+REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "..", "registry.json")
+
+# ── Registry: persisted to disk ───────────────────────────────────────────────
+
+def _load_registry() -> Dict[str, Dict[str, Any]]:
+    """Load repo registry from disk."""
+    if os.path.exists(REGISTRY_PATH):
+        try:
+            with open(REGISTRY_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_registry(registry: Dict[str, Dict[str, Any]]):
+    """Persist repo registry to disk."""
+    try:
+        with open(REGISTRY_PATH, "w") as f:
+            json.dump(registry, f, indent=2)
+    except Exception as e:
+        print(f"[ingestion] Failed to save registry: {e}")
+
+
+REPO_REGISTRY: Dict[str, Dict[str, Any]] = _load_registry()
 
 
 class IngestionService:
@@ -46,15 +71,20 @@ class IngestionService:
 
     async def ingest_github(self, github_url: str, branch: str = "main") -> Dict[str, Any]:
         """Clone a GitHub repo and ingest its code."""
-        repo_name = self._repo_name_from_url(github_url)
+        # Sanitize URL — allow only github.com URLs
+        url = github_url.strip()
+        if not re.match(r"^https://github\.com/[\w.\-]+/[\w.\-]+(\.git)?$", url):
+            raise ValueError("Invalid GitHub URL. Only https://github.com/owner/repo is supported.")
+
+        repo_name = self._repo_name_from_url(url)
         repo_id = self._make_repo_id(repo_name)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             clone_path = os.path.join(tmpdir, repo_name)
-            self._clone_repo(github_url, clone_path, branch)
+            self._clone_repo(url, clone_path, branch)
             return await self._run_pipeline(
                 clone_path, repo_id, repo_name,
-                source="github", github_url=github_url
+                source="github", github_url=url
             )
 
     async def _run_pipeline(
@@ -68,6 +98,9 @@ class IngestionService:
         """Parse → Chunk → Embed → Store in ChromaDB."""
         print(f"[ingestion] Starting pipeline for '{repo_name}' (id={repo_id})")
 
+        # Delete existing collection to avoid duplicate chunks on re-ingest
+        vector_store.delete_collection(repo_id)
+
         # 1. Parse all supported files into chunks
         chunks = parser.parse_repository(repo_path, repo_id)
         if not chunks:
@@ -79,7 +112,7 @@ class IngestionService:
         # 3. Embed + store in ChromaDB
         vector_store.index_chunks(chunks, repo_id)
 
-        # 4. Register repo metadata
+        # 4. Register repo metadata and persist to disk
         REPO_REGISTRY[repo_id] = {
             "repo_id": repo_id,
             "repo_name": repo_name,
@@ -89,6 +122,7 @@ class IngestionService:
             "chunk_count": len(chunks),
             "file_tree": file_tree[:100],  # cap at 100 for response size
         }
+        _save_registry(REPO_REGISTRY)
 
         print(f"[ingestion] Pipeline complete: {len(chunks)} chunks from {len(file_tree)} files")
 
@@ -105,11 +139,25 @@ class IngestionService:
                 "repo_id": v["repo_id"],
                 "repo_name": v["repo_name"],
                 "source": v["source"],
+                "github_url": v.get("github_url", ""),
                 "file_count": v["file_count"],
                 "chunk_count": v["chunk_count"],
             }
             for v in REPO_REGISTRY.values()
         ]
+
+    def delete_repo(self, repo_id: str):
+        """Remove a repo from the registry and delete its ChromaDB collection."""
+        if repo_id not in REPO_REGISTRY:
+            raise ValueError(f"Repo '{repo_id}' not found.")
+        vector_store.delete_collection(repo_id)
+        del REPO_REGISTRY[repo_id]
+        _save_registry(REPO_REGISTRY)
+
+    def get_repo(self, repo_id: str) -> Dict[str, Any]:
+        if repo_id not in REPO_REGISTRY:
+            raise ValueError(f"Repo '{repo_id}' not found.")
+        return REPO_REGISTRY[repo_id]
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
