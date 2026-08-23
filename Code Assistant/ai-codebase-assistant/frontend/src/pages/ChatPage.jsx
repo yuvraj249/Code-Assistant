@@ -63,36 +63,53 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
+      let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        // Keep trailing incomplete line in buffer
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
           try {
-            const payload = JSON.parse(line.slice(6));
+            const payload = JSON.parse(trimmed.slice(6));
             if (payload.done) break;
-            if (payload.error) throw new Error(payload.error);
+            if (payload.error) {
+              fullText = `⚠️ ${payload.error}`;
+              break;
+            }
             if (payload.token) {
               fullText += payload.token;
               setStreamingMsg(fullText);
             }
           } catch (parseErr) {
-            // skip malformed SSE lines
+            // ignore JSON parse errors on broken lines
           }
         }
       }
 
-      setMessages((m) => [...m, { role: "assistant", content: fullText, mode }]);
+      if (buffer.trim().startsWith("data: ")) {
+        try {
+          const payload = JSON.parse(buffer.trim().slice(6));
+          if (payload.token) fullText += payload.token;
+          if (payload.error) fullText = `⚠️ ${payload.error}`;
+        } catch (e) {}
+      }
+
+      setMessages((m) => [...m, { role: "assistant", content: fullText || "No response generated.", mode }]);
       setStreamingMsg("");
     } catch (e) {
       setStreamingMsg("");
       setMessages((m) => [...m, {
-        role: "assistant", content: `❌ ${e.message}`, mode: "error",
+        role: "assistant",
+        content: `⚠️ **Connection Error**: ${e.message}`,
+        mode: "explain",
       }]);
     } finally {
       setLoading(false);

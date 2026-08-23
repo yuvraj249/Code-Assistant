@@ -5,11 +5,13 @@ Hybrid AI Assistant:
     and attaches code context + file citations to the prompt.
   - If NO repo_id is provided (or repo not indexed): functions as a conversational AI coding assistant
     using GPT-4o-mini to answer general programming, architecture, and debugging questions.
+  - Gracefully catches OpenAI API errors (quota exceeded, invalid key, rate limits) and returns
+    clear, user-friendly markdown error explanations.
 """
 
 import os
 from typing import List, Dict, Any, AsyncGenerator
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APIError
 
 from core.vector_store import VectorStore
 
@@ -64,9 +66,7 @@ class RAGService:
 
     async def answer(self, question: str, repo_id: str = None, mode: str = "explain") -> Dict[str, Any]:
         """
-        Hybrid answering pipeline:
-        - If repo_id exists and has hits: RAG mode with code citations.
-        - Otherwise: Conversational AI coding assistant mode.
+        Hybrid answering pipeline with friendly error formatting.
         """
         hits = []
         if repo_id and repo_id.strip() and repo_id.lower() != "none":
@@ -86,14 +86,16 @@ class RAGService:
             {"role": "user", "content": user_content},
         ]
 
-        response = await openai_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=2000,
-        )
-
-        answer_text = response.choices[0].message.content
+        try:
+            response = await openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            answer_text = response.choices[0].message.content
+        except APIError as e:
+            answer_text = self._format_openai_error(e)
 
         citations = [
             {
@@ -117,7 +119,7 @@ class RAGService:
         self, question: str, repo_id: str = None, mode: str = "explain"
     ) -> AsyncGenerator[str, None]:
         """
-        SSE streaming version — handles both conversational and RAG mode.
+        SSE streaming version — yields tokens or friendly error message.
         """
         hits = []
         if repo_id and repo_id.strip() and repo_id.lower() != "none":
@@ -137,18 +139,40 @@ class RAGService:
             {"role": "user", "content": user_content},
         ]
 
-        stream = await openai_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=messages,
-            temperature=0.2,
-            max_tokens=2000,
-            stream=True,
-        )
+        try:
+            stream = await openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=2000,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except APIError as e:
+            yield self._format_openai_error(e)
 
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+    def _format_openai_error(self, e: APIError) -> str:
+        """Convert OpenAI API errors into clean markdown messages."""
+        err_str = str(e)
+        if "insufficient_quota" in err_str or "quota" in err_str:
+            return (
+                "⚠️ **OpenAI Quota Exceeded**\n\n"
+                "The OpenAI API key configured in `backend/.env` has run out of credits or billing quota.\n\n"
+                "**How to fix:**\n"
+                "1. Visit [platform.openai.com/account/billing](https://platform.openai.com/account/billing) to add credits or check your usage.\n"
+                "2. Or replace `OPENAI_API_KEY` in `backend/.env` with an active key."
+            )
+        elif "invalid_api_key" in err_str:
+            return (
+                "⚠️ **Invalid OpenAI API Key**\n\n"
+                "The `OPENAI_API_KEY` set in `backend/.env` is invalid or expired. "
+                "Please update it with a valid key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
+            )
+        else:
+            return f"⚠️ **OpenAI API Error**: {e.message if hasattr(e, 'message') else str(e)}"
 
     def _build_context(self, hits: List[Dict[str, Any]]) -> str:
         """Assemble retrieved chunks into a well-formatted context block."""
