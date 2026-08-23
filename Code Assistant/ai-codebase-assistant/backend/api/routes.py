@@ -29,13 +29,13 @@ class GithubRepoRequest(BaseModel):
 
 class QuestionRequest(BaseModel):
     question: str
-    repo_id: str
+    repo_id: Optional[str] = None
     mode: Optional[str] = "explain"  # explain | bugs | tests | architecture
 
 class AgentRequest(BaseModel):
     """OpenAI Function Calling compatible agent request."""
     question: str
-    repo_id: str
+    repo_id: Optional[str] = None
     mode: Optional[str] = "explain"
     top_k: Optional[int] = 8
     return_citations: Optional[bool] = True
@@ -86,7 +86,9 @@ async def load_github_repo(request: GithubRepoRequest):
 @router.post("/ask-question", tags=["Chat"])
 async def ask_question(request: QuestionRequest):
     """
-    RAG pipeline (blocking): embed → search → LLM → return answer + citations.
+    Hybrid Q&A pipeline:
+    - If repo_id is provided & indexed: RAG retrieval over repo.
+    - If no repo_id: Conversational AI coding assistant mode.
     """
     try:
         result = await rag_service.answer(
@@ -96,14 +98,14 @@ async def ask_question(request: QuestionRequest):
         )
         return JSONResponse({"status": "success", **result})
     except Exception as e:
-        raise HTTPException(500, f"RAG query failed: {str(e)}")
+        raise HTTPException(500, f"Q&A query failed: {str(e)}")
 
 
 @router.post("/stream-answer", tags=["Chat"])
 async def stream_answer(request: QuestionRequest):
     """
     SSE streaming answer — tokens arrive in real-time from the LLM.
-    Use EventSource or fetch with ReadableStream on the frontend.
+    Works with or without a loaded repository.
     """
     async def event_generator():
         try:
@@ -112,7 +114,6 @@ async def stream_answer(request: QuestionRequest):
                 repo_id=request.repo_id,
                 mode=request.mode,
             ):
-                # SSE format: "data: <payload>\n\n"
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
@@ -137,10 +138,10 @@ async def agent_endpoint(request: AgentRequest):
     Returns structured JSON with answer, citations, and metadata.
     Call this from LangGraph, Claude tools, or any AI pipeline.
 
-    Example curl:
+    Example curl (without repo):
         curl -X POST http://localhost:8000/api/agent \\
           -H "Content-Type: application/json" \\
-          -d '{"question": "Where is auth implemented?", "repo_id": "YOUR_REPO_ID", "mode": "explain"}'
+          -d '{"question": "How do I implement JWT in FastAPI?", "mode": "explain"}'
     """
     try:
         result = await rag_service.answer(
@@ -159,6 +160,7 @@ async def agent_endpoint(request: AgentRequest):
             "response": {
                 "answer": result["answer"],
                 "citations": result.get("citations", []) if request.return_citations else [],
+                "has_context": result.get("has_context", False),
                 "mode": result["mode"],
                 "model": result.get("model", "gpt-4o-mini"),
             },

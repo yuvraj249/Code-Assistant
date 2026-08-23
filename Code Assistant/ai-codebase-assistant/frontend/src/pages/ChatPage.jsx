@@ -5,20 +5,19 @@ import "./ChatPage.css";
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
 const MODES = [
-  { id: "explain",      label: "Explain",      icon: "◉", color: "purple", ariaLabel: "Explain mode: explain code and architecture" },
-  { id: "bugs",         label: "Bug Hunt",     icon: "▲", color: "red",    ariaLabel: "Bug Hunt mode: detect bugs and vulnerabilities" },
-  { id: "tests",        label: "Gen Tests",    icon: "◈", color: "green",  ariaLabel: "Generate Tests mode: create unit tests" },
-  { id: "architecture", label: "Architecture", icon: "⬡", color: "yellow", ariaLabel: "Architecture mode: high-level architectural analysis" },
+  { id: "explain",      label: "Explain",      icon: "◉", color: "purple", ariaLabel: "Explain mode: explain code, concepts, and architecture" },
+  { id: "bugs",         label: "Bug Hunt",     icon: "▲", color: "red",    ariaLabel: "Bug Hunt mode: detect bugs and security issues" },
+  { id: "tests",        label: "Gen Tests",    icon: "◈", color: "green",  ariaLabel: "Generate Tests mode: create unit test suites" },
+  { id: "architecture", label: "Architecture", icon: "⬡", color: "yellow", ariaLabel: "Architecture mode: high-level structural analysis" },
 ];
 
 const EXAMPLE_QUESTIONS = [
-  "Where is authentication implemented?",
-  "Explain how the API layer works",
-  "Which files interact with the database?",
-  "Identify possible bugs in this module",
-  "Summarize the architecture of this repository",
-  "How do services communicate with each other?",
-  "Generate unit tests for the main functions",
+  "How do I implement JWT authentication in FastAPI?",
+  "Explain the difference between interface and abstract class",
+  "Write a Python script for async rate limiting",
+  "How do vector embeddings work in RAG applications?",
+  "What are common OWASP top 10 security vulnerabilities in REST APIs?",
+  "Generate pytest unit tests for an async database connection pool",
 ];
 
 export default function ChatPage({ activeRepo, setCurrentPage }) {
@@ -34,19 +33,11 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading, streamingMsg]);
 
-  // Focus input on mount
   useEffect(() => { inputRef.current?.focus(); }, []);
 
   const sendMessage = useCallback(async (question) => {
     const q = (question || input).trim();
     if (!q || loading) return;
-
-    if (!activeRepo) {
-      setMessages((m) => [...m, {
-        role: "assistant", content: "⚠ No repository loaded. Please upload or connect a repo first.", mode: "explain",
-      }]);
-      return;
-    }
 
     setMessages((m) => [...m, { role: "user", content: q, mode }]);
     if (!question) setInput("");
@@ -54,11 +45,14 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
     setStreamingMsg("");
 
     try {
-      // Use SSE streaming endpoint
       const res = await fetch(`${API}/stream-answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, repo_id: activeRepo.repo_id, mode }),
+        body: JSON.stringify({
+          question: q,
+          repo_id: activeRepo?.repo_id || null,
+          mode,
+        }),
       });
 
       if (!res.ok) {
@@ -88,7 +82,7 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
               setStreamingMsg(fullText);
             }
           } catch (parseErr) {
-            // skip malformed lines
+            // skip malformed SSE lines
           }
         }
       }
@@ -111,13 +105,15 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
       {/* Header */}
       <header className="chat-header">
         <div className="chat-header-left">
-          <h1 className="page-title">AI Chat</h1>
+          <h1 className="page-title">AI Assistant</h1>
           {activeRepo ? (
             <span className="badge badge-green" role="status" aria-label={`Active repository: ${activeRepo.repo_name}`}>
-              ● {activeRepo.repo_name}
+              ● {activeRepo.repo_name} (RAG Indexed)
             </span>
           ) : (
-            <span className="badge badge-red" role="alert">No repo loaded</span>
+            <span className="badge badge-purple" role="status" aria-label="General Conversational Mode Active">
+              ◈ Conversational AI Mode
+            </span>
           )}
         </div>
 
@@ -151,28 +147,28 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
         {messages.length === 0 && !loading && (
           <div className="empty-state">
             <div className="empty-icon" aria-hidden="true">◉</div>
-            <div className="empty-title">Ask anything about the codebase</div>
+            <div className="empty-title">Ask CodeMind anything</div>
             <div className="empty-subtitle">
-              {activeRepo
-                ? `Repository: ${activeRepo.repo_name} is ready`
-                : <>Load a repository first. <button className="inline-link" onClick={() => setCurrentPage("upload")}>Go to Upload</button></>}
+              {activeRepo ? (
+                <>RAG Search enabled for <strong>{activeRepo.repo_name}</strong></>
+              ) : (
+                <>Conversational AI Mode active · <button className="inline-link" onClick={() => setCurrentPage("upload")}>Upload a repository</button> for deep codebase search</>
+              )}
             </div>
-            {activeRepo && (
-              <div className="example-questions" role="list" aria-label="Example questions">
-                {EXAMPLE_QUESTIONS.map((q) => (
-                  <button
-                    key={q}
-                    className="example-q"
-                    role="listitem"
-                    onClick={() => sendMessage(q)}
-                    aria-label={`Ask: ${q}`}
-                    tabIndex={0}
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="example-questions" role="list" aria-label="Example questions">
+              {EXAMPLE_QUESTIONS.map((q) => (
+                <button
+                  key={q}
+                  className="example-q"
+                  role="listitem"
+                  onClick={() => sendMessage(q)}
+                  aria-label={`Ask: ${q}`}
+                  tabIndex={0}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -248,7 +244,7 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
             ref={inputRef}
             id="chat-input"
             rows={1}
-            placeholder="Ask a question about the codebase…"
+            placeholder={activeRepo ? `Ask about ${activeRepo.repo_name} or general coding…` : "Ask any coding, architecture, or debugging question…"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -257,7 +253,7 @@ export default function ChatPage({ activeRepo, setCurrentPage }) {
                 sendMessage();
               }
             }}
-            aria-label="Ask a question about the codebase"
+            aria-label="Ask a question"
             aria-describedby="input-hint"
             disabled={loading}
           />
