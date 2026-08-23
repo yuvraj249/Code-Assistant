@@ -213,17 +213,25 @@
 }
 .pm-url-bar:focus-within { border-color: var(--accent); }
 
+/* Clean Method Select: NO grey background, NO browser outline, simple text + down arrow */
 .pm-method-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   background: transparent;
   border: none;
   font-family: var(--font-mono);
   font-size: 0.85rem;
   font-weight: 800;
-  padding: 0.6rem 0.85rem;
+  padding: 0.6rem 1.6rem 0.6rem 0.85rem;
   outline: none;
   cursor: pointer;
-
+  box-shadow: none !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%238b90b8' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
 }
+
 .pm-method-select.pm-method-get    { color: #0cbb52; }
 .pm-method-select.pm-method-post   { color: #f97316; }
 .pm-method-select.pm-method-put    { color: #3b82f6; }
