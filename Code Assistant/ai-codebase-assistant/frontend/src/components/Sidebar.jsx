@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { id: "upload",       icon: "⬆",  label: "Upload Repo",  ariaLabel: "Go to Upload Repository page"  },
   { id: "chat",         icon: "◉",  label: "AI Chat",      ariaLabel: "Go to AI Chat page"            },
   { id: "architecture", icon: "⬡",  label: "Architecture", ariaLabel: "Go to Architecture Analysis page" },
+  { id: "api-tester",   icon: "⚡", label: "API Tester",   ariaLabel: "Go to Interactive API Tester page" },
 ];
 
 export default function Sidebar({ currentPage, setCurrentPage, activeRepo }) {
@@ -13,7 +14,7 @@ export default function Sidebar({ currentPage, setCurrentPage, activeRepo }) {
 
   return (
     <aside className="sidebar" aria-label="Application sidebar">
-      {/* Logo — not focusable, decorative */}
+      {/* Logo */}
       <div className="sidebar-logo" aria-hidden="true">
         <span className="logo-mark">▸▸</span>
         <span className="logo-text">CodeMind</span>
@@ -72,8 +73,8 @@ export default function Sidebar({ currentPage, setCurrentPage, activeRepo }) {
 
       {/* Bottom info */}
       <div className="sidebar-footer" aria-label="Application info">
-        <div className="footer-label">RAG · ChromaDB · GPT-4o</div>
-        <div className="footer-version">v2.0.0</div>
+        <div className="footer-label">RAG · Gemini 3.6 · Postman API</div>
+        <div className="footer-version">v2.1.0</div>
       </div>
     </aside>
   );

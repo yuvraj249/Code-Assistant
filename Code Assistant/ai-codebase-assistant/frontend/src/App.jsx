@@ -2,6 +2,7 @@ import { useState } from "react";
 import UploadPage from "./pages/UploadPage";
 import ChatPage from "./pages/ChatPage";
 import ArchitecturePage from "./pages/ArchitecturePage";
+import ApiTesterPage from "./pages/ApiTesterPage";
 import Sidebar from "./components/Sidebar";
 import "./styles/globals.css";
 
@@ -34,6 +35,9 @@ export default function App() {
           )}
           {currentPage === "architecture" && (
             <ArchitecturePage activeRepo={activeRepo} />
+          )}
+          {currentPage === "api-tester" && (
+            <ApiTesterPage activeRepo={activeRepo} setCurrentPage={setCurrentPage} />
           )}
         </main>
       </div>
