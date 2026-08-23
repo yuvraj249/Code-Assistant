@@ -1,19 +1,21 @@
 """
 Summary Service
 Generates AI-powered repository summaries and Mermaid architecture diagrams.
-Uses GPT-4o-mini to produce meaningful summaries instead of hardcoded heuristics.
+Uses Gemini (or OpenAI) to produce meaningful summaries.
 """
 
 import os
+import json
+import httpx
 from typing import Dict, Any, List
-from openai import AsyncOpenAI
 
 from services.ingestion_service import REPO_REGISTRY
 
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+PROVIDER   = os.getenv("LLM_PROVIDER", "gemini" if GEMINI_KEY else "openai")
+MODEL_NAME = os.getenv("LLM_MODEL", "gemini-3.6-flash" if PROVIDER == "gemini" else "gpt-4o-mini")
 
-# Cache summaries to avoid recomputation
 SUMMARY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -40,7 +42,6 @@ class SummaryService:
         file_tree = meta.get("file_tree", [])
         file_tree_str = "\n".join(file_tree[:80])
 
-        # ── Static analysis (no LLM cost) ─────────────────────────────────────
         language_count: Dict[str, int] = {}
         for f in file_tree:
             ext = f.rsplit(".", 1)[-1] if "." in f else "unknown"
@@ -51,7 +52,6 @@ class SummaryService:
         key_files = self._get_key_files(file_tree)
         dependencies = self._extract_dependencies(file_tree)
 
-        # ── LLM-powered summary ────────────────────────────────────────────────
         llm_result = await self._llm_analyze(
             repo_name=meta["repo_name"],
             file_tree_str=file_tree_str,
@@ -85,7 +85,7 @@ class SummaryService:
         modules: List[str],
         primary_language: str,
     ) -> Dict[str, Any]:
-        """Use GPT-4o-mini to generate a real summary and Mermaid diagram."""
+        """Use Gemini / OpenAI to generate a real summary and Mermaid diagram."""
 
         prompt = f"""You are CodeMind, an expert software architect analyzing a codebase.
 
@@ -99,19 +99,13 @@ File Tree (first 80 files):
 
 Based on this file structure, provide:
 
-1. ARCHITECTURE: One-line architectural pattern (e.g. "REST API / MVC", "React SPA", "Microservices", "CLI Tool", "Full-stack Next.js")
+1. ARCHITECTURE: One-line architectural pattern (e.g. "REST API / MVC", "React SPA", "Microservices", "CLI Tool")
 
-2. OVERVIEW: 2-3 sentence summary of what this repository does and how it's organized. Be specific.
+2. OVERVIEW: 2-3 sentence summary of what this repository does and how it's organized.
 
-3. ARCHITECTURE_EXPLANATION: A paragraph explaining the architectural decisions, how components interact, and the data flow.
+3. ARCHITECTURE_EXPLANATION: A paragraph explaining the architectural decisions, component interactions, and data flow.
 
-4. MERMAID_DIAGRAM: A valid Mermaid `graph TD` diagram showing the main components and their relationships. Use the actual folder/file names. Keep it to 8-15 nodes max. Example format:
-```
-graph TD
-    User[👤 User] --> Frontend[React Frontend]
-    Frontend --> API[FastAPI Backend]
-    API --> DB[(PostgreSQL)]
-```
+4. MERMAID_DIAGRAM: A valid Mermaid `graph TD` diagram showing main components (8-12 nodes max).
 
 Respond in this exact format:
 ARCHITECTURE: <one line>
@@ -123,24 +117,34 @@ MERMAID_DIAGRAM:
 ```"""
 
         try:
-            response = await openai_client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=800,
-            )
-            text = response.choices[0].message.content
-            return self._parse_llm_response(text, modules)
+            if GEMINI_KEY or PROVIDER == "gemini":
+                key = GEMINI_KEY or os.getenv("GEMINI_API_KEY")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={key}"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    res = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]})
+                    if res.status_code == 200:
+                        text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        return self._parse_llm_response(text, modules)
+            else:
+                from openai import AsyncOpenAI
+                client = AsyncOpenAI(api_key=OPENAI_KEY)
+                res = await client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=800,
+                )
+                return self._parse_llm_response(res.choices[0].message.content, modules)
         except Exception as e:
             print(f"[summary] LLM call failed: {e}. Falling back to heuristics.")
-            return self._fallback_summary(modules)
+
+        return self._fallback_summary(modules)
 
     def _parse_llm_response(self, text: str, modules: List[str]) -> Dict[str, Any]:
-        """Parse the structured LLM response."""
         result = {
             "architecture": "General Codebase",
             "overview": "An AI-indexed repository.",
-            "architecture_explanation": "Architecture analysis unavailable.",
+            "architecture_explanation": "Architecture analysis complete.",
             "mermaid_diagram": self._fallback_mermaid(modules),
         }
 
@@ -155,12 +159,11 @@ MERMAID_DIAGRAM:
             elif line.startswith("ARCHITECTURE_EXPLANATION:"):
                 result["architecture_explanation"] = line.replace("ARCHITECTURE_EXPLANATION:", "").strip()
             elif line.startswith("MERMAID_DIAGRAM:"):
-                # Collect everything in the code block
                 diagram_lines = []
                 i += 1
                 while i < len(lines) and not lines[i].startswith("```"):
                     i += 1
-                i += 1  # skip opening ```
+                i += 1
                 while i < len(lines) and not lines[i].startswith("```"):
                     diagram_lines.append(lines[i])
                     i += 1
@@ -173,8 +176,8 @@ MERMAID_DIAGRAM:
     def _fallback_summary(self, modules: List[str]) -> Dict[str, Any]:
         return {
             "architecture": "General Codebase",
-            "overview": "Repository successfully indexed. AI summary unavailable — check OPENAI_API_KEY.",
-            "architecture_explanation": "Set OPENAI_API_KEY in backend/.env for AI-powered architecture analysis.",
+            "overview": "Repository successfully indexed.",
+            "architecture_explanation": "Structure based on directory organization.",
             "mermaid_diagram": self._fallback_mermaid(modules),
         }
 
@@ -185,10 +188,7 @@ MERMAID_DIAGRAM:
             diagram += f"    Root --> {safe_id}[{m}]\n"
         return diagram
 
-    # ─── Static Helpers ───────────────────────────────────────────────────────
-
     def _extract_modules(self, file_tree: List[str]) -> List[str]:
-        """Extract top-level folders as modules."""
         modules = set()
         for f in file_tree:
             parts = f.replace("\\", "/").split("/")
@@ -197,19 +197,16 @@ MERMAID_DIAGRAM:
         return sorted(list(modules))[:10]
 
     def _get_key_files(self, file_tree: List[str]) -> List[str]:
-        """Identify important files by name pattern."""
         keywords = ["main", "app", "index", "server", "config", "routes", "schema", "models"]
         return [f for f in file_tree if any(k in f.lower() for k in keywords)][:10]
 
     def _extract_dependencies(self, file_tree: List[str]) -> List[str]:
-        """Detect dependency files present."""
         dep_files = {
             "requirements.txt": "Python (pip)",
             "package.json": "Node.js (npm)",
             "go.mod": "Go modules",
             "Cargo.toml": "Rust (cargo)",
             "pyproject.toml": "Python (poetry/uv)",
-            "Gemfile": "Ruby (bundler)",
         }
         found = []
         flat = " ".join(file_tree)

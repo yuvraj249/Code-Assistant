@@ -1,24 +1,24 @@
 """
 RAG Service
-Hybrid AI Assistant:
-  - If a valid repo_id is provided and indexed: runs vector retrieval (ChromaDB)
-    and attaches code context + file citations to the prompt.
-  - If NO repo_id is provided (or repo not indexed): functions as a conversational AI coding assistant
-    using GPT-4o-mini to answer general programming, architecture, and debugging questions.
-  - Gracefully catches OpenAI API errors (quota exceeded, invalid key, rate limits) and returns
-    clear, user-friendly markdown error explanations.
+Hybrid AI Assistant supporting Google Gemini (100% Free) & OpenAI.
+  - Automatically selects Gemini if GEMINI_API_KEY is configured (or LLM_PROVIDER=gemini).
+  - Handles RAG codebase search (ChromaDB) and conversational general coding Q&A.
+  - Supports SSE streaming response generation.
 """
 
 import os
+import json
+import httpx
 from typing import List, Dict, Any, AsyncGenerator
-from openai import AsyncOpenAI, APIError
 
 from core.vector_store import VectorStore
 
 vector_store = VectorStore()
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+PROVIDER   = os.getenv("LLM_PROVIDER", "gemini" if GEMINI_KEY else "openai")
+MODEL_NAME = os.getenv("LLM_MODEL", "gemini-3.6-flash" if PROVIDER == "gemini" else "gpt-4o-mini")
 
 # ── System prompts for general & RAG modes ────────────────────────────────────
 
@@ -66,7 +66,7 @@ class RAGService:
 
     async def answer(self, question: str, repo_id: str = None, mode: str = "explain") -> Dict[str, Any]:
         """
-        Hybrid answering pipeline with friendly error formatting.
+        Hybrid answering pipeline (Gemini / OpenAI).
         """
         hits = []
         if repo_id and repo_id.strip() and repo_id.lower() != "none":
@@ -81,21 +81,10 @@ class RAGService:
         else:
             user_content = question
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
-
-        try:
-            response = await openai_client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=2000,
-            )
-            answer_text = response.choices[0].message.content
-        except APIError as e:
-            answer_text = self._format_openai_error(e)
+        if GEMINI_KEY or PROVIDER == "gemini":
+            answer_text = await self._call_gemini(system_prompt, user_content)
+        else:
+            answer_text = await self._call_openai(system_prompt, user_content)
 
         citations = [
             {
@@ -111,7 +100,8 @@ class RAGService:
             "answer": answer_text,
             "citations": citations,
             "mode": mode,
-            "model": LLM_MODEL,
+            "model": MODEL_NAME,
+            "provider": PROVIDER,
             "has_context": has_context,
         }
 
@@ -119,7 +109,7 @@ class RAGService:
         self, question: str, repo_id: str = None, mode: str = "explain"
     ) -> AsyncGenerator[str, None]:
         """
-        SSE streaming version — yields tokens or friendly error message.
+        SSE streaming generator for Gemini / OpenAI.
         """
         hits = []
         if repo_id and repo_id.strip() and repo_id.lower() != "none":
@@ -134,15 +124,97 @@ class RAGService:
         else:
             user_content = question
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
+        if GEMINI_KEY or PROVIDER == "gemini":
+            async for token in self._stream_gemini(system_prompt, user_content):
+                yield token
+        else:
+            async for token in self._stream_openai(system_prompt, user_content):
+                yield token
 
+    # ── Gemini API Helpers ───────────────────────────────────────────────────
+
+    async def _call_gemini(self, system_prompt: str, user_content: str) -> str:
+        """Call Google Gemini REST API using httpx."""
+        key = GEMINI_KEY or os.getenv("GEMINI_API_KEY")
+        if not key:
+            return "⚠️ **Gemini API Key missing**. Please set `GEMINI_API_KEY` in `backend/.env`."
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={key}"
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_content}"}]}
+            ]
+        }
         try:
-            stream = await openai_client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=messages,
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                res = await client.post(url, json=payload)
+                if res.status_code != 200:
+                    return f"⚠️ **Gemini API Error ({res.status_code})**: {res.text}"
+                data = res.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            return f"⚠️ **Gemini Error**: {str(e)}"
+
+    async def _stream_gemini(self, system_prompt: str, user_content: str) -> AsyncGenerator[str, None]:
+        """Stream response tokens from Google Gemini REST API."""
+        key = GEMINI_KEY or os.getenv("GEMINI_API_KEY")
+        if not key:
+            yield "⚠️ **Gemini API Key missing**. Please set `GEMINI_API_KEY` in `backend/.env`."
+            return
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:streamGenerateContent?alt=sse&key={key}"
+        payload = {
+            "contents": [
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_content}"}]}
+            ]
+        }
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                async with client.stream("POST", url, json=payload) as res:
+                    if res.status_code != 200:
+                        yield f"⚠️ **Gemini API Error ({res.status_code})**"
+                        return
+                    async for line in res.aiter_lines():
+                        if line.startswith("data: "):
+                            try:
+                                data = json.loads(line[6:])
+                                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                                if text:
+                                    yield text
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                pass
+        except Exception as e:
+            yield f"⚠️ **Gemini Stream Error**: {str(e)}"
+
+    # ── OpenAI Helpers ────────────────────────────────────────────────────────
+
+    async def _call_openai(self, system_prompt: str, user_content: str) -> str:
+        from openai import AsyncOpenAI, APIError
+        client = AsyncOpenAI(api_key=OPENAI_KEY)
+        try:
+            res = await client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            return res.choices[0].message.content
+        except APIError as e:
+            return f"⚠️ **OpenAI API Error**: {e.message if hasattr(e, 'message') else str(e)}"
+
+    async def _stream_openai(self, system_prompt: str, user_content: str) -> AsyncGenerator[str, None]:
+        from openai import AsyncOpenAI, APIError
+        client = AsyncOpenAI(api_key=OPENAI_KEY)
+        try:
+            stream = await client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
                 temperature=0.2,
                 max_tokens=2000,
                 stream=True,
@@ -152,27 +224,7 @@ class RAGService:
                 if delta:
                     yield delta
         except APIError as e:
-            yield self._format_openai_error(e)
-
-    def _format_openai_error(self, e: APIError) -> str:
-        """Convert OpenAI API errors into clean markdown messages."""
-        err_str = str(e)
-        if "insufficient_quota" in err_str or "quota" in err_str:
-            return (
-                "⚠️ **OpenAI Quota Exceeded**\n\n"
-                "The OpenAI API key configured in `backend/.env` has run out of credits or billing quota.\n\n"
-                "**How to fix:**\n"
-                "1. Visit [platform.openai.com/account/billing](https://platform.openai.com/account/billing) to add credits or check your usage.\n"
-                "2. Or replace `OPENAI_API_KEY` in `backend/.env` with an active key."
-            )
-        elif "invalid_api_key" in err_str:
-            return (
-                "⚠️ **Invalid OpenAI API Key**\n\n"
-                "The `OPENAI_API_KEY` set in `backend/.env` is invalid or expired. "
-                "Please update it with a valid key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
-            )
-        else:
-            return f"⚠️ **OpenAI API Error**: {e.message if hasattr(e, 'message') else str(e)}"
+            yield f"⚠️ **OpenAI API Error**: {e.message if hasattr(e, 'message') else str(e)}"
 
     def _build_context(self, hits: List[Dict[str, Any]]) -> str:
         """Assemble retrieved chunks into a well-formatted context block."""
