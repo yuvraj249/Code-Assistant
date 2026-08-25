@@ -9,15 +9,26 @@ const NAV_ITEMS = [
   { id: "api-tester",   icon: "⚡", label: "API Tester",   ariaLabel: "Go to Interactive API Tester page" },
 ];
 
-export default function Sidebar({ currentPage, setCurrentPage, activeRepo }) {
+export default function Sidebar({ currentPage, setCurrentPage, activeRepo, mobileMenuOpen, setMobileMenuOpen }) {
   const [agentOpen, setAgentOpen] = useState(false);
 
   return (
-    <aside className="sidebar" aria-label="Application sidebar">
-      {/* Logo */}
-      <div className="sidebar-logo" aria-hidden="true">
-        <span className="logo-mark">▸▸</span>
-        <span className="logo-text">CodeMind</span>
+    <aside className={`sidebar ${mobileMenuOpen ? "mobile-open" : ""}`} aria-label="Application sidebar">
+      {/* Logo Header */}
+      <div className="sidebar-logo">
+        <div className="sidebar-logo-left">
+          <span className="logo-mark">▸▸</span>
+          <span className="logo-text">CodeMind</span>
+        </div>
+        {setMobileMenuOpen && (
+          <button
+            className="sidebar-close-btn"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="Close sidebar navigation menu"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       {/* Active repo badge */}
@@ -37,7 +48,10 @@ export default function Sidebar({ currentPage, setCurrentPage, activeRepo }) {
               key={item.id}
               id={`nav-${item.id}`}
               className={`nav-item ${isActive ? "active" : ""}`}
-              onClick={() => setCurrentPage(item.id)}
+              onClick={() => {
+                setCurrentPage(item.id);
+                if (setMobileMenuOpen) setMobileMenuOpen(false);
+              }}
               aria-label={item.ariaLabel}
               aria-current={isActive ? "page" : undefined}
               title={item.label}

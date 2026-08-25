@@ -1,7 +1,8 @@
 .chat-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  max-height: 100vh;
   overflow: hidden;
 }
 
@@ -232,3 +233,29 @@
 
 .send-btn { flex-shrink: 0; }
 .input-hint { font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-muted); }
+
+/* Mobile Responsiveness */
+@media (max-width: 600px) {
+  .chat-header {
+    padding: 0.75rem 1rem;
+  }
+  .messages-area {
+    padding: 0.75rem 1rem;
+  }
+  .user-bubble {
+    max-width: 90%;
+  }
+  .assistant-bubble {
+    max-width: 100%;
+  }
+  .input-bar {
+    padding: 0.6rem 0.75rem;
+  }
+  .mode-selector {
+    gap: 0.25rem;
+  }
+  .mode-btn {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.7rem;
+  }
+}
